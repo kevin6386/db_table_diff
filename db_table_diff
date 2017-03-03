@@ -1,0 +1,92 @@
+#!/usr/bin/perl 
+use DBI;
+use strict;
+use Getopt::Std;
+#定义收件人
+my $mail='pangkuo@aa.com';
+#定义源数据库ip,就是主库ip
+my $source_ip='MASTER_IP';
+#定义获取数据库信息
+my $db_ip='数据库中心ip';
+my $db_user='user';
+my $db_pass='pass';
+my $db_dbname='system';
+#定义本地数据库信息
+my $local_dbip='localhost';
+my $local_dbuser='back';
+my $local_dbpass='back';
+my $local_db='mysql';
+my $dbh;
+#定义内容输出文件
+my $LOG='/tmp/table_diff.log';
+`>$LOG`;
+open(LOG_FILE,">>$LOG");
+#获取本地ip
+my $local_ip=`/sbin/ifconfig |grep inet| grep -i bcast|cut -d':' -f2|awk '{print \$1}'|grep -v -E '10.1|172.|192.|127.'`;
+chomp($local_ip);
+#定义数据源信息
+sub dbcon{
+	my $dsn="DBI:mysql:database=$db_dbname;host=$db_ip;port=3306;mysql_socket=/tmp/mysql.sock";
+	 $dbh = DBI->connect("$dsn","$db_user","$db_pass") or  die "Unable to connect: $DBI::errstr\n"; 
+	 $dbh->do("SET names utf8");
+}
+#定义本地数据库信息
+my $ldbh;
+sub local_dbcon{
+	    my $dsn1="DBI:mysql:database=$local_db;host=$local_dbip;port=3306;mysql_socket=/tmp/mysql.sock";
+	    $ldbh = DBI->connect("$dsn1","$local_dbuser","$local_dbpass") or  die "Unable to connect: $DBI::errstr\n";
+    	my $i=$ldbh->do("set names utf8;");
+
+}
+#获取汇报的表数量信息
+sub get_sql{
+	&dbcon();
+	&local_dbcon;
+	my $sql="select a.dbname,count(*) n from db_table a where dbname in (select DISTINCT(dbname) from db_table where ip='$source_ip' and a.dbname !='voole_log' and a.dbname !='voole_task' ) and a.ip='$source_ip' GROUP BY a.dbname";
+	my $sth = $dbh->prepare($sql);
+	$sth->execute();
+	my $info;
+	my $gsql;
+	my $dbname;
+	my $i;
+	while (my @row = $sth->fetchrow_array ) {
+			$dbname=$row[0];
+			my $num=$row[1];
+			chomp($dbname);
+			chomp($num);
+			#$gsql="select count(1) n  from information_schema.`TABLES` where TABLE_SCHEMA='$dbname'";
+			$gsql="select a.dbname,count(*) n from db_table a where a.ip='$local_ip' and  a.dbname='$dbname' ";
+			my $sth = $dbh->prepare($gsql);
+    		$sth->execute();
+		    while (my @row = $sth->fetchrow_array ) { 
+				my $db=$row[0];
+				my $n=$row[1];
+				chomp($n);
+				if($num eq $n){
+					print "$dbname $num == $n \n";
+				}else{
+					print "$gsql ,$sql $dbname \n$num != $n \n";
+					$info.="<tr align='center' ><td>$dbname</td><td>$sql</td><td>$gsql</td><td>$num </td><td>$n</td></tr>";
+					$i=1;
+				}
+
+			}
+	}
+	my $body="<body><table    border='1' cellspacing='0' cellpadding='0'>
+                <tr>
+					<td >数据库名</td>
+					<td >数据中心SQL</td>
+					<td >本地SQL</td>
+					<td >源数据中心表数量</td>
+					<td >本地还原表数量</td>
+                </tr>";
+	my $message;
+	print LOG_FILE $info;
+	if( $i == '1' ){
+		$message="$local_ip 还原后与$db_ip 数据库中表数量校对 异常 :\n $body.$info";	
+	}else{
+		$message="$local_ip 还原后与$db_ip 数据库中表数量校对 ok!";	
+	}
+	`/usr/local/bin/sendEmail -f bjyunwei24\@aa.com -t $mail  -s mail.aa.com -u '$local_ip restore DB info' -xu aa -xp  aa\@aa  -m '$message ' -o tls=no -o message-charset=UTF-8 -o message-content-type=html`;
+}
+&get_sql();
